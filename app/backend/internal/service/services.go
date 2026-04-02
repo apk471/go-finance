@@ -9,13 +9,16 @@ import (
 type Services struct {
 	Auth *AuthService
 	Job  *job.JobService
+	User *UserService
 }
 
 func NewServices(s *server.Server, repos *repository.Repositories) (*Services, error) {
 	authService := NewAuthService(s)
+	userService := NewUserService(s, repos.User)
 
 	return &Services{
 		Job:  s.Job,
 		Auth: authService,
+		User: userService,
 	}, nil
 }
