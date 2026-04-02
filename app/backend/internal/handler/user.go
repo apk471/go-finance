@@ -49,11 +49,18 @@ type UpdateUserRequest struct {
 }
 
 func (r *UpdateUserRequest) Validate() error {
+	fieldErrors := validation.CustomValidationErrors{}
 	if err := validator.New().Struct(r); err != nil {
 		return err
 	}
 
-	fieldErrors := validation.CustomValidationErrors{}
+	if r.Email == nil && r.Name == nil && r.Role == nil && r.Status == nil {
+		fieldErrors = append(fieldErrors, validation.CustomValidationError{
+			Field:   "body",
+			Message: "at least one field must be provided",
+		})
+	}
+
 	if r.Role != nil && !model.IsValidRole(*r.Role) {
 		fieldErrors = append(fieldErrors, validation.CustomValidationError{
 			Field:   "role",
@@ -152,7 +159,7 @@ func (h *UserHandler) RegisterRoutes(group *echo.Group, auth *middleware.AuthMid
 	group.GET("/users/me", Handle(h.Handler, h.GetCurrentUser, http.StatusOK, &EmptyRequest{}), auth.RequireAuth, auth.RequireActiveUser)
 	group.POST("/users/bootstrap", Handle(h.Handler, h.BootstrapUser, http.StatusCreated, &BootstrapUserRequest{}), auth.RequireAuth)
 
-	adminGroup := group.Group("/users", auth.RequireAuth, auth.RequireActiveUser, auth.RequireRoles(model.UserRoleAdmin))
+	adminGroup := group.Group("/users", auth.RequireAuth, auth.RequireActiveUser, auth.RequirePermission(middleware.PermissionManageUsers))
 	adminGroup.GET("", Handle(h.Handler, h.ListUsers, http.StatusOK, &EmptyRequest{}))
 	adminGroup.GET("/:id", Handle(h.Handler, h.GetUser, http.StatusOK, &GetUserRequest{}))
 	adminGroup.POST("", Handle(h.Handler, h.CreateUser, http.StatusCreated, &CreateUserRequest{}))

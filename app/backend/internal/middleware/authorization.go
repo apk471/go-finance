@@ -13,6 +13,35 @@ const (
 	DevUserRoleHeader   = "X-Dev-User-Role"
 )
 
+type Permission string
+
+const (
+	PermissionReadRecords     Permission = "read_records"
+	PermissionAccessSummaries Permission = "access_summaries"
+	PermissionManageRecords   Permission = "manage_records"
+	PermissionDeleteRecords   Permission = "delete_records"
+	PermissionManageUsers     Permission = "manage_users"
+)
+
+var rolePermissions = map[model.UserRole]map[Permission]struct{}{
+	model.UserRoleViewer: {
+		PermissionReadRecords:     {},
+		PermissionAccessSummaries: {},
+	},
+	model.UserRoleAnalyst: {
+		PermissionReadRecords:     {},
+		PermissionAccessSummaries: {},
+		PermissionManageRecords:   {},
+	},
+	model.UserRoleAdmin: {
+		PermissionReadRecords:     {},
+		PermissionAccessSummaries: {},
+		PermissionManageRecords:   {},
+		PermissionDeleteRecords:   {},
+		PermissionManageUsers:     {},
+	},
+}
+
 func GetCurrentUser(c echo.Context) *model.User {
 	user, ok := c.Get(CurrentUserKey).(*model.User)
 	if !ok {
@@ -25,6 +54,16 @@ func GetCurrentUser(c echo.Context) *model.User {
 func GetAuthUserID(c echo.Context) string {
 	authUserID, _ := c.Get(AuthUserIDKey).(string)
 	return authUserID
+}
+
+func HasPermission(role model.UserRole, permission Permission) bool {
+	permissions, ok := rolePermissions[model.NormalizeRole(role)]
+	if !ok {
+		return false
+	}
+
+	_, ok = permissions[permission]
+	return ok
 }
 
 func (auth *AuthMiddleware) RequireActiveUser(next echo.HandlerFunc) echo.HandlerFunc {
@@ -88,6 +127,23 @@ func (auth *AuthMiddleware) RequireMinimumRole(role model.UserRole) echo.Middlew
 
 			if !model.RoleAtLeast(user.Role, required) {
 				return errs.NewForbiddenError("Insufficient role for this action", true)
+			}
+
+			return next(c)
+		}
+	}
+}
+
+func (auth *AuthMiddleware) RequirePermission(permission Permission) echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			user := GetCurrentUser(c)
+			if user == nil {
+				return errs.NewUnauthorizedError("Unauthorized", false)
+			}
+
+			if !HasPermission(user.Role, permission) {
+				return errs.NewForbiddenError("Insufficient permissions for this action", true)
 			}
 
 			return next(c)
