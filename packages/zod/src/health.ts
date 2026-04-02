@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ZDateTime } from "./common.js";
 
 const ZHealthCheck = z.object({
   status: z.string(),
@@ -8,7 +9,7 @@ const ZHealthCheck = z.object({
 
 export const ZHealthResponse = z.object({
   status: z.enum(["healthy", "unhealthy"]),
-  timestamp: z.string().datetime(),
+  timestamp: ZDateTime,
   environment: z.string(),
   checks: z.object({
     database: ZHealthCheck,

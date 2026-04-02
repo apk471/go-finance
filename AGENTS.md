@@ -1,42 +1,76 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
-This repository is a monorepo with a Go backend and shared TypeScript packages.
-- `app/backend/`: Go API server (`cmd/go-boilerplate` entrypoint, `internal/` app code, `templates/`, `static/`).
-- `packages/zod`: shared Zod schemas.
-- `packages/openapi`: ts-rest contracts and OpenAPI generation.
-- `packages/emails`: React Email templates exported to backend HTML templates.
-- `README.md`: architecture, environment variables, and operational details.
+## Project Structure
 
-## Build, Test, and Development Commands
-Run from repository root unless noted.
-- `bun run dev`: starts Turbo dev pipelines across workspaces.
-- `bun run build`: builds all configured workspaces.
-- `bun run lint`, `bun run typecheck`: workspace linting/type checks through Turbo.
-- `cd app/backend && task run`: run the Go API locally.
-- `cd app/backend && task tidy`: `go fmt`, `go mod tidy`, and dependency verification.
-- `cd app/backend && task migrations:new name=add_users_table`: create a migration.
-- `cd app/backend && BOILERPLATE_DB_DSN=... task migrations:up`: apply migrations.
+This monorepo contains a Go backend plus shared TypeScript packages.
 
-## Coding Style & Naming Conventions
-- Go code must pass `gofmt` and `golangci-lint` (`app/backend/.golangci.yml`).
-- Keep packages focused by layer (`handler`, `service`, `repository`, `middleware`).
-- Use `CamelCase` for exported Go symbols and `snake_case` file names for SQL migrations (e.g., `002_add_users.sql`).
-- TypeScript packages use strict `tsconfig` settings; keep source in `src/` and exports explicit.
+- `app/backend/`: main API server
+- `packages/openapi`: shared OpenAPI generation
+- `packages/zod`: shared validation schemas
+- `packages/emails`: shared email templates
+- `README.md`: primary onboarding and API documentation
 
-## Testing Guidelines
-- Add Go tests as `*_test.go` files next to the package under test.
-- Run backend tests with `cd app/backend && go test ./...`.
-- For changed TS packages, at minimum run `bun run typecheck` and package build commands.
-- Prefer table-driven tests for handlers/services and cover error paths (validation, DB, auth).
+## Development Commands
 
-## Commit & Pull Request Guidelines
-Recent history includes short messages and partial `feat:` prefixes; use clear, imperative commits consistently.
-- Recommended format: `feat: add health check redis timeout handling`, `fix: map pg unique violation to 400`.
-- Keep commits scoped to one concern.
-- PRs should include: purpose, key changes, test commands run, config/migration impact, and sample API output when behavior changes (e.g., `/status` or `/docs`).
+Run from the repo root unless a command says otherwise.
 
-## Security & Configuration Tips
-- Never commit secrets; use `BOILERPLATE_*` environment variables.
-- For migration tasks, set `BOILERPLATE_DB_DSN` explicitly.
-- Validate OpenAPI output stays in sync with backend static docs (`app/backend/static/openapi.json`).
+- `bun install`: install workspace dependencies
+- `bun run dev`: start workspace dev pipelines
+- `bun run build`: build all configured workspaces
+- `bun run lint`: run lint tasks across workspaces
+- `bun run typecheck`: run TypeScript type checks
+- `cd app/backend && task run`: start the Go API
+- `cd app/backend && go test ./...`: run backend tests
+- `cd app/backend && task tidy`: format and tidy backend dependencies
+- `cd app/backend && task migrations:new name=add_feature`: create a migration
+- `cd app/backend && BOILERPLATE_DB_DSN=... task migrations:up`: apply migrations
+
+## Backend Conventions
+
+- Keep the Go backend layered as `handler -> service -> repository`
+- Keep handlers thin and push business rules into services
+- Keep repository methods focused on data access and SQL concerns
+- Use `gofmt` on all edited Go files
+- Add tests next to the changed package as `*_test.go`
+
+## Current Domain
+
+The backend currently supports:
+
+- User bootstrap and user management
+- Financial record CRUD
+- Dashboard summary aggregation APIs
+- Permission-based access control for `viewer`, `analyst`, and `admin`
+- Structured validation and error handling
+
+When adding new features, preserve those patterns instead of introducing parallel ones.
+
+## Access Control Expectations
+
+The repo now uses explicit permissions instead of relying only on role ordering.
+
+- `viewer`: read records and summaries
+- `analyst`: read plus create and update records
+- `admin`: full record and user management
+
+If you add protected endpoints, wire them through the authorization middleware and follow the existing permission model.
+
+## Validation and Errors
+
+- Prefer request structs with `Validate()` methods
+- Return structured `errs.HTTPError` responses for user-facing failures
+- Use field-level validation errors for bad input
+- Reject invalid operations early in the service layer when possible
+
+## Documentation Expectations
+
+- Keep `README.md` aligned with actual endpoints and startup steps
+- Keep `app/backend/README.md` aligned with backend-specific workflows
+- Update both `AGENTS.md` files when repo conventions materially change
+
+## Security and Config
+
+- Never commit secrets
+- Use `BOILERPLATE_*` environment variables for backend config
+- Set `BOILERPLATE_DB_DSN` explicitly for migration commands
+- Keep generated docs in sync with `app/backend/static/openapi.json`
