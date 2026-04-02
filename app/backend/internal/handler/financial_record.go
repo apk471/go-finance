@@ -166,17 +166,17 @@ func (h *FinancialRecordHandler) DeleteFinancialRecord(c echo.Context, req *GetF
 }
 
 func (h *FinancialRecordHandler) RegisterRoutes(group *echo.Group, auth *middleware.AuthMiddleware) {
-	readGroup := group.Group("/records", auth.RequireAuth, auth.RequireActiveUser, auth.RequireMinimumRole(model.UserRoleViewer))
+	readGroup := group.Group("/records", auth.RequireAuth, auth.RequireActiveUser, auth.RequirePermission(middleware.PermissionReadRecords))
 	readGroup.GET("", Handle(h.Handler, h.ListFinancialRecords, http.StatusOK, &ListFinancialRecordsRequest{}))
 	readGroup.GET("/:id", Handle(h.Handler, h.GetFinancialRecord, http.StatusOK, &GetFinancialRecordRequest{}))
 
-	dashboardGroup := group.Group("/dashboard", auth.RequireAuth, auth.RequireActiveUser, auth.RequireMinimumRole(model.UserRoleViewer))
+	dashboardGroup := group.Group("/dashboard", auth.RequireAuth, auth.RequireActiveUser, auth.RequirePermission(middleware.PermissionAccessSummaries))
 	dashboardGroup.GET("/summary", Handle(h.Handler, h.GetDashboardSummary, http.StatusOK, &GetDashboardSummaryRequest{}))
 
-	writeGroup := group.Group("/records", auth.RequireAuth, auth.RequireActiveUser, auth.RequireMinimumRole(model.UserRoleAnalyst))
+	writeGroup := group.Group("/records", auth.RequireAuth, auth.RequireActiveUser, auth.RequirePermission(middleware.PermissionManageRecords))
 	writeGroup.POST("", Handle(h.Handler, h.CreateFinancialRecord, http.StatusCreated, &CreateFinancialRecordRequest{}))
 	writeGroup.PATCH("/:id", Handle(h.Handler, h.UpdateFinancialRecord, http.StatusOK, &UpdateFinancialRecordRequest{}))
 
-	adminGroup := group.Group("/records", auth.RequireAuth, auth.RequireActiveUser, auth.RequireRoles(model.UserRoleAdmin))
+	adminGroup := group.Group("/records", auth.RequireAuth, auth.RequireActiveUser, auth.RequirePermission(middleware.PermissionDeleteRecords))
 	adminGroup.DELETE("/:id", HandleNoContent(h.Handler, h.DeleteFinancialRecord, http.StatusNoContent, &GetFinancialRecordRequest{}))
 }
