@@ -78,6 +78,18 @@ func (r *ListFinancialRecordsRequest) Validate() error {
 	return nil
 }
 
+type GetDashboardSummaryRequest struct {
+	DateFrom      *string              `query:"dateFrom"`
+	DateTo        *string              `query:"dateTo"`
+	TrendInterval *model.TrendInterval `query:"trendInterval" validate:"omitempty,oneof=weekly monthly"`
+	TrendPeriods  *int                 `query:"trendPeriods" validate:"omitempty,min=1,max=24"`
+	RecentLimit   *int                 `query:"recentLimit" validate:"omitempty,min=1,max=20"`
+}
+
+func (r *GetDashboardSummaryRequest) Validate() error {
+	return validator.New().Struct(r)
+}
+
 func NewFinancialRecordHandler(s *server.Server, recordService *service.FinancialRecordService) *FinancialRecordHandler {
 	return &FinancialRecordHandler{
 		Handler:       NewHandler(s),
@@ -116,6 +128,19 @@ func (h *FinancialRecordHandler) GetFinancialRecord(c echo.Context, req *GetFina
 	return h.recordService.GetFinancialRecordByID(c.Request().Context(), recordID)
 }
 
+func (h *FinancialRecordHandler) GetDashboardSummary(c echo.Context, req *GetDashboardSummaryRequest) (*model.DashboardSummary, error) {
+	currentUser := middleware.GetCurrentUser(c)
+
+	return h.recordService.GetDashboardSummary(c.Request().Context(), service.GetDashboardSummaryInput{
+		UserID:        currentUser.ID,
+		DateFrom:      req.DateFrom,
+		DateTo:        req.DateTo,
+		TrendInterval: req.TrendInterval,
+		TrendPeriods:  req.TrendPeriods,
+		RecentLimit:   req.RecentLimit,
+	})
+}
+
 func (h *FinancialRecordHandler) UpdateFinancialRecord(c echo.Context, req *UpdateFinancialRecordRequest) (*model.FinancialRecord, error) {
 	recordID, err := uuid.Parse(req.ID)
 	if err != nil {
@@ -144,6 +169,9 @@ func (h *FinancialRecordHandler) RegisterRoutes(group *echo.Group, auth *middlew
 	readGroup := group.Group("/records", auth.RequireAuth, auth.RequireActiveUser, auth.RequireMinimumRole(model.UserRoleViewer))
 	readGroup.GET("", Handle(h.Handler, h.ListFinancialRecords, http.StatusOK, &ListFinancialRecordsRequest{}))
 	readGroup.GET("/:id", Handle(h.Handler, h.GetFinancialRecord, http.StatusOK, &GetFinancialRecordRequest{}))
+
+	dashboardGroup := group.Group("/dashboard", auth.RequireAuth, auth.RequireActiveUser, auth.RequireMinimumRole(model.UserRoleViewer))
+	dashboardGroup.GET("/summary", Handle(h.Handler, h.GetDashboardSummary, http.StatusOK, &GetDashboardSummaryRequest{}))
 
 	writeGroup := group.Group("/records", auth.RequireAuth, auth.RequireActiveUser, auth.RequireMinimumRole(model.UserRoleAnalyst))
 	writeGroup.POST("", Handle(h.Handler, h.CreateFinancialRecord, http.StatusCreated, &CreateFinancialRecordRequest{}))

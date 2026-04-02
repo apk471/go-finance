@@ -11,19 +11,22 @@ import (
 )
 
 type stubFinancialRecordRepository struct {
-	createInput  repository.CreateFinancialRecordParams
-	createResult *model.FinancialRecord
-	createErr    error
-	listInput    model.FinancialRecordFilters
-	listResult   []model.FinancialRecord
-	listErr      error
-	getResult    *model.FinancialRecord
-	getErr       error
-	updateInput  repository.UpdateFinancialRecordParams
-	updateResult *model.FinancialRecord
-	updateErr    error
-	deleteID     uuid.UUID
-	deleteErr    error
+	createInput   repository.CreateFinancialRecordParams
+	createResult  *model.FinancialRecord
+	createErr     error
+	listInput     model.FinancialRecordFilters
+	listResult    []model.FinancialRecord
+	listErr       error
+	getResult     *model.FinancialRecord
+	getErr        error
+	updateInput   repository.UpdateFinancialRecordParams
+	updateResult  *model.FinancialRecord
+	updateErr     error
+	deleteID      uuid.UUID
+	deleteErr     error
+	summaryInput  repository.DashboardSummaryParams
+	summaryResult *model.DashboardSummary
+	summaryErr    error
 }
 
 func (s *stubFinancialRecordRepository) CreateFinancialRecord(ctx context.Context, params repository.CreateFinancialRecordParams) (*model.FinancialRecord, error) {
@@ -71,6 +74,20 @@ func (s *stubFinancialRecordRepository) UpdateFinancialRecord(ctx context.Contex
 func (s *stubFinancialRecordRepository) DeleteFinancialRecord(ctx context.Context, id uuid.UUID) error {
 	s.deleteID = id
 	return s.deleteErr
+}
+
+func (s *stubFinancialRecordRepository) GetDashboardSummary(ctx context.Context, params repository.DashboardSummaryParams) (*model.DashboardSummary, error) {
+	s.summaryInput = params
+	if s.summaryResult != nil {
+		return s.summaryResult, s.summaryErr
+	}
+
+	return &model.DashboardSummary{
+		TrendInterval: params.TrendInterval,
+		TotalIncome:   "0.00",
+		TotalExpenses: "0.00",
+		NetBalance:    "0.00",
+	}, s.summaryErr
 }
 
 func TestCreateFinancialRecordNormalizesInput(t *testing.T) {
@@ -158,5 +175,78 @@ func TestUpdateFinancialRecordPreservesExistingFields(t *testing.T) {
 	}
 	if repo.updateInput.Category != "Travel" {
 		t.Fatalf("expected category to be updated, got %q", repo.updateInput.Category)
+	}
+}
+
+func TestGetDashboardSummaryNormalizesFiltersAndDefaults(t *testing.T) {
+	repo := &stubFinancialRecordRepository{}
+	svc := NewFinancialRecordService(repo)
+	userID := uuid.New()
+	now := time.Date(2026, 4, 2, 10, 0, 0, 0, time.UTC)
+	previousNow := currentTime
+	currentTime = func() time.Time { return now }
+	defer func() { currentTime = previousNow }()
+
+	trendInterval := model.TrendInterval("WEEKLY")
+
+	_, err := svc.GetDashboardSummary(context.Background(), GetDashboardSummaryInput{
+		UserID:        userID,
+		TrendInterval: &trendInterval,
+	})
+	if err != nil {
+		t.Fatalf("GetDashboardSummary() error = %v", err)
+	}
+
+	if repo.summaryInput.UserID != userID {
+		t.Fatalf("expected user id %s, got %s", userID, repo.summaryInput.UserID)
+	}
+	if repo.summaryInput.TrendInterval != model.TrendIntervalWeekly {
+		t.Fatalf("expected weekly interval, got %s", repo.summaryInput.TrendInterval)
+	}
+	if repo.summaryInput.RecentLimit != defaultDashboardRecentLimit {
+		t.Fatalf("expected default recent limit %d, got %d", defaultDashboardRecentLimit, repo.summaryInput.RecentLimit)
+	}
+
+	expectedTrendStart := time.Date(2026, 2, 26, 0, 0, 0, 0, time.UTC)
+	expectedTrendEnd := time.Date(2026, 4, 2, 0, 0, 0, 0, time.UTC)
+	if !repo.summaryInput.TrendStart.Equal(expectedTrendStart) {
+		t.Fatalf("expected trend start %s, got %s", expectedTrendStart, repo.summaryInput.TrendStart)
+	}
+	if !repo.summaryInput.TrendEnd.Equal(expectedTrendEnd) {
+		t.Fatalf("expected trend end %s, got %s", expectedTrendEnd, repo.summaryInput.TrendEnd)
+	}
+}
+
+func TestGetDashboardSummaryUsesProvidedDates(t *testing.T) {
+	repo := &stubFinancialRecordRepository{}
+	svc := NewFinancialRecordService(repo)
+	userID := uuid.New()
+	dateFrom := "2026-01-01"
+	dateTo := "2026-03-31"
+	recentLimit := 10
+	trendPeriods := 3
+
+	_, err := svc.GetDashboardSummary(context.Background(), GetDashboardSummaryInput{
+		UserID:       userID,
+		DateFrom:     &dateFrom,
+		DateTo:       &dateTo,
+		RecentLimit:  &recentLimit,
+		TrendPeriods: &trendPeriods,
+	})
+	if err != nil {
+		t.Fatalf("GetDashboardSummary() error = %v", err)
+	}
+
+	if repo.summaryInput.DateFrom == nil || repo.summaryInput.DateTo == nil {
+		t.Fatal("expected date filters to be set")
+	}
+	if repo.summaryInput.RecentLimit != recentLimit {
+		t.Fatalf("expected recent limit %d, got %d", recentLimit, repo.summaryInput.RecentLimit)
+	}
+	if !repo.summaryInput.TrendStart.Equal(*repo.summaryInput.DateFrom) {
+		t.Fatalf("expected trend start to match dateFrom, got %s", repo.summaryInput.TrendStart)
+	}
+	if !repo.summaryInput.TrendEnd.Equal(*repo.summaryInput.DateTo) {
+		t.Fatalf("expected trend end to match dateTo, got %s", repo.summaryInput.TrendEnd)
 	}
 }
