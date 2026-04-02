@@ -1,382 +1,802 @@
-# Go Boilerplate
+# Go Finance
 
-A production-ready Go backend boilerplate with Echo, PostgreSQL, Redis, background jobs, observability (New Relic), Clerk auth, typed handlers, OpenAPI docs, and shared TypeScript packages for API contracts and Zod schemas.
+Go Finance is a monorepo centered around a Go API for user management, financial record tracking, dashboard summaries, role-based access control, and production-style validation/error handling.
 
----
+This README is the primary onboarding and API reference for the project.
 
-## Table of Contents
+## API Quick Reference
 
-- [Overview](#overview)
-- [Project Structure](#project-structure)
-- [Backend](#backend)
-  - [Entry Point & Startup](#entry-point--startup)
-  - [Configuration](#configuration)
-  - [Server](#server)
-  - [Database](#database)
-  - [Router & Middleware](#router--middleware)
-  - [Handlers](#handlers)
-  - [Errors](#errors)
-  - [Logging & Observability](#logging--observability)
-  - [Services & Repositories](#services--repositories)
-  - [Background Jobs](#background-jobs)
-  - [Email](#email)
-  - [Validation](#validation)
-- [Packages (TypeScript)](#packages-typescript)
-- [Tooling](#tooling)
-- [Environment Variables](#environment-variables)
-- [Running the Project](#running-the-project)
-- [Extending the Boilerplate](#extending-the-boilerplate)
+Base URL:
 
----
-
-## Overview
-
-- **API framework:** [Echo v4](https://echo.labstack.com/)
-- **Database:** PostgreSQL via [pgx v5](https://github.com/jackc/pgx), [tern](https://github.com/jackc/tern) migrations
-- **Cache/queue:** Redis ([go-redis](https://github.com/redis/go-redis)), [Asynq](https://github.com/hibiken/asynq) for background jobs
-- **Auth:** [Clerk](https://clerk.com/) via `clerk-sdk-go` (JWT/session validation, user/role/permissions in context)
-- **Config:** [Koanf](https://github.com/knadh/koanf) from env with `BOILERPLATE_` prefix, [go-playground/validator](https://github.com/go-playground/validator)
-- **Logging:** [zerolog](https://github.com/rs/zerolog) with request-scoped loggers and optional New Relic log forwarding
-- **Observability:** New Relic (APM, distributed tracing, log context, nrpgx5, nrecho, nrredis, zerolog writer)
-- **API docs:** OpenAPI 3 generated from [ts-rest](https://ts-rest.com/) contracts in `packages/openapi`, served at `/docs` with Scalar
-- **Shared types:** Zod schemas and OpenAPI generation in `packages/zod` and `packages/openapi`
-
----
-
-## Project Structure
-
-```
-go-boilerplate/
-├── backend/                    # Go API server
-│   ├── cmd/go-boilerplate/     # main entry
-│   ├── internal/
-│   │   ├── config/             # config structs, load, observability
-│   │   ├── database/           # pgx pool, migrations (embed)
-│   │   ├── errs/               # HTTP error types and constructors
-│   │   ├── handler/            # health, openapi, base (typed Handle/HandleNoContent/HandleFile)
-│   │   ├── lib/
-│   │   │   ├── email/          # Resend client, templates, welcome email
-│   │   │   ├── jobs/           # Asynq job service, welcome email task
-│   │   │   └── utils/          # small helpers (e.g. PrintJSON)
-│   │   ├── logger/             # zerolog + New Relic LoggerService, pgx logger
-│   │   ├── middleware/         # CORS, secure, request ID, tracing, context, auth, rate limit, recover, global error
-│   │   ├── repository/         # repository layer (currently empty struct)
-│   │   ├── router/             # Echo router, system routes registration
-│   │   ├── server/             # Server struct (config, DB, Redis, Job, HTTP server)
-│   │   ├── service/            # Auth (Clerk), Job service ref
-│   │   ├── sqlerr/             # PG error → HTTP error mapping
-│   │   └── validation/         # BindAndValidate, Validatable, tag→message mapping
-│   ├── static/                 # openapi.html, openapi.json (from packages/openapi gen)
-│   ├── templates/emails/       # HTML email templates (e.g. welcome.html)
-│   ├── Taskfile.yml            # run, migrations:new, migrations:up, tidy
-│   ├── .golangci.yml           # linter config
-│   ├── go.mod
-│   └── go.sum
-├── packages/
-│   ├── openapi/                # ts-rest contracts, OpenAPI 3 generation, writes openapi.json
-│   ├── zod/                    # shared Zod schemas (e.g. health response)
-│   └── emails/                 # (optional) React email templates
-├── package.json                # workspace root, turbo scripts
-├── turbo.json
-└── README.md
+```text
+http://localhost:8080
 ```
 
----
-
-## Backend
-
-### Entry Point & Startup
-
-- **`cmd/go-boilerplate/main.go`**
-  - Loads config via `config.LoadConfig()` (env-only, `BOILERPLATE_` prefix).
-  - Creates `LoggerService` (New Relic optional) and zerolog logger.
-  - Runs DB migrations when `env != "local"` via `database.Migrate(...)`.
-  - Builds `server.Server` (DB, Redis, Asynq job service), repositories, services, handlers, router.
-  - Sets up HTTP server on `server.Port`, starts it and graceful shutdown on interrupt (30s timeout).
-  - Shuts down HTTP server, DB pool, and job server.
-
-### Configuration
-
-- **`internal/config/config.go`**
-
-  - **Config** struct: Primary (env), Server (port, timeouts, CORS origins), Database (host, port, user, password, name, ssl_mode, pool settings), Auth (secret for Clerk), Redis (address), Integration (e.g. Resend API key), Observability (optional).
-  - Load: Koanf with `env.Provider("BOILERPLATE_", ".", lowerAndTrimPrefix)` so env vars like `BOILERPLATE_SERVER_PORT` map to `server.port`.
-  - Validation with `go-playground/validator`; on failure the process exits.
-  - Observability defaults: `DefaultObservabilityConfig()` and override with `observability.service_name`, `observability.environment` from primary env.
-
-- **`internal/config/observability.go`**
-  - **ObservabilityConfig:** service_name, environment, logging (level, format, slow_query_threshold), new_relic (license_key, app_log_forwarding_enabled, distributed_tracing_enabled, debug_logging), health_checks (enabled, interval, timeout, checks list).
-  - `Validate()`: service_name required, log level in [debug, info, warn, error], slow_query_threshold >= 0.
-  - `GetLogLevel()`: uses environment default (e.g. debug for development) when level empty.
-  - `IsProduction()`: true when environment == "production".
-
-### Server
-
-- **`internal/server/server.go`**
-  - **Server** holds: Config, Logger, LoggerService, DB (*database.Database), Redis (go-redis Client), Job (*jobs.JobService), and the HTTP server.
-  - **New:** Creates DB (with optional New Relic nrpgx5 tracer, local pgx tracelog in local env), Redis client (with optional nrredis hook), Job service (Asynq client + server), starts the job server (registers task handlers).
-  - **SetupHTTPServer(handler):** Sets `http.Server` (Addr from config, read/write/idle timeouts).
-  - **Start:** Calls `ListenAndServe()`.
-  - **Shutdown:** Shuts down HTTP server, closes DB pool, stops job server.
-
-### Database
-
-- **`internal/database/database.go`**
-
-  - **Database** wraps `*pgxpool.Pool` and a logger.
-  - **New:** Builds DSN (password URL-encoded), parses pool config; if LoggerService has New Relic app, sets `nrpgx5.NewTracer()`; in local env adds pgx-zerolog tracelog (or multi-tracer with both). Pool created with `pgxpool.NewWithConfig`, then ping with 10s timeout.
-  - **Close:** Logs and closes pool.
-
-- **`internal/database/migrator.go`**
-
-  - Uses embedded `migrations/*.sql` and [tern](https://github.com/jackc/tern) with table `schema_version`.
-  - **Migrate:** Connects with same DSN, creates tern migrator, loads migrations from embed, runs migrate, logs version.
-
-- **`internal/database/migrations/001_setup.sql`**
-  - Placeholder migration (empty up/down). New migrations: `task migrations:new name=something`.
-
-### Router & Middleware
-
-- **`internal/router/router.go`**
-
-  - **NewRouter:** Creates Echo instance, sets **GlobalErrorHandler** from middlewares, then applies in order:
-    - Rate limiter (20 req/s, memory store), DenyHandler returns 429 and records rate limit hit in New Relic.
-    - CORS (origins from config), Secure(), RequestID (X-Request-ID, uuid if missing), NewRelic (nrecho), EnhanceTracing (request id, user id, status code, NoticeError), ContextEnhancer (request-scoped logger with request_id, method, path, ip, trace context, user_id, user_role), RequestLogger, Recover.
-  - Registers system routes via `registerSystemRoutes`; `/api/v1` group exists for future versioned routes.
-
-- **`internal/router/system.go`**
-
-  - **GET /status** → HealthHandler.CheckHealth
-  - **/static** → static files (e.g. openapi.json)
-  - **GET /docs** → OpenAPIHandler.ServeOpenAPIUI (serves static/openapi.html, which loads /static/openapi.json and Scalar)
-
-- **Middleware details**
-  - **global (internal/middleware/global.go):** CORS, Secure, RequestLogger (status, latency, URI, etc., uses context logger and request_id/user_id), Recover, GlobalErrorHandler (sqlerr handling, then HTTP/echo error → JSON response, logging).
-  - **auth (auth.go):** Clerk `WithHeaderAuthorization`; on success sets `user_id`, `user_role`, `permissions` in context; on failure returns 401 JSON.
-  - **context (context.go):** Puts request-scoped logger (with request_id, method, path, ip, trace id/span id if New Relic, user_id/user_role) in context; `GetLogger(c)`, `GetUserID(c)`.
-  - **request_id (request_id.go):** Reads or generates X-Request-ID, sets in context and response header.
-  - **tracing (tracing.go):** Wraps nrecho middleware; EnhanceTracing adds http.real_ip, http.user_agent, request.id, user.id, http.status_code, and NoticeError on handler error.
-  - **rate_limit (rate_limit.go):** RecordRateLimitHit(endpoint) for New Relic custom event when rate limit is hit.
-
-### Handlers
-
-- **`internal/handler/handlers.go`**
-
-  - **Handlers** contains Health and OpenAPI. **NewHandlers** builds them from server and services.
-
-- **`internal/handler/base.go`**
-
-  - **Handler** is a base with server reference.
-  - **HandlerFunc[Req, Res], HandlerFuncNoContent[Req]** for typed handlers.
-  - **ResponseHandler** interface: Handle(c, result), GetOperation(), AddAttributes(txn, result). Implementations: **JSONResponseHandler**, **NoContentResponseHandler**, **FileResponseHandler** (filename, content-type, blob).
-  - **handleRequest:** Binds and validates payload with `validation.BindAndValidate`, runs handler, records validation/handler duration and status on New Relic transaction, uses context logger; on error uses `nrpkgerrors.Wrap` and returns err; on success calls responseHandler.Handle(c, result).
-  - **Handle**, **HandleNoContent**, **HandleFile** wrap handler funcs with handleRequest and the appropriate response handler.
-
-- **`internal/handler/health.go`**
-
-  - **CheckHealth:** Returns JSON with status (healthy/unhealthy), timestamp, environment, and **checks** (database ping, redis ping when Redis not nil). On DB/Redis failure sets check to unhealthy and records **HealthCheckError** custom event in New Relic. Returns 503 when unhealthy.
-
-- **`internal/handler/openapi.go`**
-  - **ServeOpenAPIUI:** Serves `static/openapi.html` as HTML (Cache-Control: no-cache). The HTML page loads Scalar with `/static/openapi.json`.
-
-### Errors
-
-- **`internal/errs/type.go`**
-
-  - **HTTPError:** Code, Message, Status, Override, Errors (field-level), Action (e.g. redirect). Implements `error` and `Is(*HTTPError)`.
-
-- **`internal/errs/http.go`**
-
-  - Constructors: **NewUnauthorizedError**, **NewForbiddenError**, **NewBadRequestError**, **NewNotFoundError**, **NewInternalServerError**, **ValidationError**. **MakeUpperCaseWithUnderscores** for code formatting.
-
-- **`internal/sqlerr/error.go`**
-
-  - **Code** constants: Other, NotNullViolation, ForeignKeyViolation, UniqueViolation, CheckViolation, etc., with **MapCode** from PostgreSQL codes (23502, 23503, 23505, …).
-  - **Severity** and **Error** struct (Code, Severity, Message, TableName, ColumnName, ConstraintName, …). **ConvertPgError** from pgconn.PgError.
-
-- **`internal/sqlerr/handler.go`**
-  - **HandleError(err):** If already HTTPError, return as-is. If pgconn.PgError, convert and map to user-facing message and **errs** (BadRequest with optional field errors for not_null, NotFound for no rows, InternalServerError for rest). **ErrNoRows** / **sql.ErrNoRows** → NotFound. Otherwise InternalServerError.
-  - Global error handler (in global.go) calls **sqlerr.HandleError** for non-HTTP errors before formatting response.
-
-### Logging & Observability
-
-- **`internal/logger/logger.go`**
-
-  - **LoggerService:** Holds optional New Relic Application. **NewLoggerService** from ObservabilityConfig (app name, license, log forwarding, distributed tracing, optional debug logger). **Shutdown** flushes New Relic.
-  - **NewLoggerWithService:** Builds zerolog with level from config, time format, pkgerrors stack marshaler; in production with JSON format and NR app, wraps writer with **zerologWriter** for log forwarding; otherwise console writer in dev. Logger has service, environment; in non-production adds Stack().
-  - **WithTraceContext:** Adds trace.id and span.id from New Relic transaction to logger.
-  - **NewPgxLogger,** **GetPgxTraceLogLevel:** Used for local DB query logging when env is local.
-
-- New Relic integrations used: main agent, nrecho-v4, nrpgx5, nrredis-v9, nrpkgerrors, logcontext-v2/zerologWriter.
-
-### Services & Repositories
-
-- **`internal/repository/repositories.go`**
-
-  - **Repositories** is an empty struct; **NewRepositories(server)** returns it. Ready for DB-backed repositories.
-
-- **`internal/service/services.go`**
-
-  - **Services** has Auth and Job. **NewServices(server, repos)** builds AuthService (sets Clerk key from config) and attaches server’s Job service.
-
-- **`internal/service/auth.go`**
-  - **AuthService** only sets **Clerk** secret key from config; actual auth is in middleware via Clerk SDK.
-
-### Background Jobs
-
-- **`internal/lib/jobs/job.go`**
-
-  - **JobService:** Asynq client + server (Redis addr from config). Queues: critical (6), default (3), low (1). **Start:** Registers **TaskWelcome** handler, starts server. **Stop:** Shutdown server, close client.
-
-- **`internal/lib/jobs/email_task.go`**
-
-  - **TaskWelcome** = `"email:welcome"`. **WelcomeEmailPayload:** To, FirstName. **NewWelcomeEmailTask** builds asynq task with MaxRetry(3), Queue("default"), Timeout(30s).
-
-- **`internal/lib/jobs/handlers.go`**
-  - **InitHandlers:** Creates email client from config and logger. **handleWelcomeEmailTask:** Unmarshals payload, calls **emailClient.SendWelcomeEmail(to, firstName)**, logs success/failure.
-
-### Email
-
-- **`internal/lib/email/client.go`**
-
-  - **Client** wraps Resend client. **SendEmail(to, subject, templateName, data):** Loads HTML from `templates/emails/{templateName}.html`, executes with data, sends via Resend (from: Boilerplate &lt;onboarding@resend.dev&gt;).
-
-- **`internal/lib/email/emails.go`**
-
-  - **SendWelcomeEmail(to, firstName):** Uses TemplateWelcome and data UserFirstName.
-
-- **`internal/lib/email/template.go`**
-
-  - **Template** type; **TemplateWelcome** = `"welcome"`.
-
-- **`internal/lib/email/preview.go`**
-
-  - **PreviewData** map for template preview (e.g. welcome → UserFirstName: "John").
-
-- **`templates/emails/welcome.html`**
-  - Go HTML template with `{{.UserFirstName}}`, “Welcome to Boilerplate!”, CTA, support link.
-
-### Validation
-
-- **`internal/validation/utils.go`**
-  - **Validatable** interface: `Validate() error`.
-  - **BindAndValidate(c, payload):** Binds payload with `c.Bind(payload)`, then validates with `validateStruct(payload)`. On bind error returns BadRequest with message; on validation error returns BadRequest with **extractValidationErrors** (field + message per tag).
-  - **extractValidationErrors:** Handles **validator.ValidationErrors** (required, min, max, oneof, email, e164, uuid, uuidList, dive) and custom **CustomValidationErrors**.
-  - **IsValidUUID:** regex for UUID string.
-
----
-
-## Packages (TypeScript)
-
-- **`packages/zod`**
-
-  - Shared Zod schemas; **@anatine/zod-openapi** for OpenAPI metadata. Exports e.g. **ZHealthResponse** (status, timestamp, environment, checks.database, checks.redis).
-
-- **`packages/openapi`**
-
-  - **ts-rest** contract: health contract (GET /status, response ZHealthResponse). **apiContract** aggregates contracts.
-  - **generateOpenApi** with security (bearerAuth, x-service-token), operationMapper for security metadata. **gen.ts** string-replaces custom “file” type with OpenAPI binary, then writes **openapi.json** to repo and (in script) to `../../apps/backend/static/openapi.json` For this repo, add or change the output path in `packages/openapi/src/gen.ts` to `../../backend/static/openapi.json` so `/docs` loads the generated spec.
-  - Backend serves `/docs` with Scalar and `/static/openapi.json` so docs stay in sync when you run the openapi package gen.
-
-- **`packages/emails`**
-  - Optional React-based email templates (e.g. welcome.tsx); can be used to generate or mirror HTML for backend.
-
----
-
-## Tooling
-
-- **Taskfile (backend/Taskfile.yml)**
-
-  - **run:** `go run ./cmd/go-boilerplate`
-  - **migrations:new:** `tern new -m ./internal/database/migrations {{.NAME}}` (requires `name=...`)
-  - **migrations:up:** `tern migrate -m ./internal/database/migrations --conn-string {{.BOILERPLATE_DB_DSN}}` (with confirm)
-  - **tidy:** `go fmt ./...`, `go mod tidy`, `go mod verify`
-
-- **Golangci-lint (backend/.golangci.yml)**
-
-  - Large set of linters (errcheck, staticcheck, gosec, revive, gocritic, etc.) with sensible limits (e.g. cyclop, funlen, gocognit). **gomodguard** blocks old uuid/protobuf modules. **exhaustruct** exclusions for std and third-party structs. **govet** with shadow strict.
-
-- **Root**
-  - **package.json** + **turbo.json**: Workspaces `apps/*`, `packages/*`; scripts: build, dev, format, lint, typecheck, clean. Turbo runs tasks with dependency order (^build, etc.).
-
----
-
-## Environment Variables
-
-All backend config is read from environment with prefix **BOILERPLATE\_**. Keys are lowercased and the prefix is stripped (e.g. `BOILERPLATE_SERVER_PORT` → `server.port`). Nested keys use underscore (e.g. `BOILERPLATE_DATABASE_HOST`).
-
-Example (replace values as needed):
+For local authenticated requests, these headers are useful:
 
 ```bash
-# Primary
+-H "X-Dev-Auth-User-Id: local-dev-user" \
+-H "X-Dev-User-Role: admin"
+```
+
+Important:
+
+- `X-Dev-User-Role` helps local auth identify the caller
+- most protected routes still require the user to exist in the `users` table
+- `POST /api/v1/users/bootstrap` is typically the first authenticated API call in a fresh local database
+
+### System Endpoints
+
+#### `GET /status`
+
+```bash
+curl http://localhost:8080/status
+```
+
+#### `GET /docs`
+
+```bash
+curl http://localhost:8080/docs
+```
+
+#### `GET /static/openapi.json`
+
+```bash
+curl http://localhost:8080/static/openapi.json
+```
+
+### User Endpoints
+
+#### `POST /api/v1/users/bootstrap`
+
+Creates the initial admin user.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/users/bootstrap \
+  -H "Content-Type: application/json" \
+  -H "X-Dev-Auth-User-Id: local-dev-user" \
+  -H "X-Dev-User-Role: admin" \
+  -d '{
+    "email": "admin@example.com",
+    "name": "Admin User"
+  }'
+```
+
+#### `GET /api/v1/users/me`
+
+```bash
+curl http://localhost:8080/api/v1/users/me \
+  -H "X-Dev-Auth-User-Id: local-dev-user" \
+  -H "X-Dev-User-Role: admin"
+```
+
+#### `GET /api/v1/users`
+
+Admin only.
+
+```bash
+curl http://localhost:8080/api/v1/users \
+  -H "X-Dev-Auth-User-Id: local-dev-user" \
+  -H "X-Dev-User-Role: admin"
+```
+
+#### `GET /api/v1/users/:id`
+
+Admin only.
+
+```bash
+curl http://localhost:8080/api/v1/users/11111111-1111-1111-1111-111111111111 \
+  -H "X-Dev-Auth-User-Id: local-dev-user" \
+  -H "X-Dev-User-Role: admin"
+```
+
+#### `POST /api/v1/users`
+
+Admin only.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/users \
+  -H "Content-Type: application/json" \
+  -H "X-Dev-Auth-User-Id: local-dev-user" \
+  -H "X-Dev-User-Role: admin" \
+  -d '{
+    "authUserId": "user_analyst_1",
+    "email": "analyst@example.com",
+    "name": "Analyst User",
+    "role": "analyst",
+    "status": "active"
+  }'
+```
+
+#### `PATCH /api/v1/users/:id`
+
+Admin only.
+
+```bash
+curl -X PATCH http://localhost:8080/api/v1/users/11111111-1111-1111-1111-111111111111 \
+  -H "Content-Type: application/json" \
+  -H "X-Dev-Auth-User-Id: local-dev-user" \
+  -H "X-Dev-User-Role: admin" \
+  -d '{
+    "role": "viewer",
+    "status": "active"
+  }'
+```
+
+### Financial Record Endpoints
+
+#### `GET /api/v1/records`
+
+Viewer and above.
+
+```bash
+curl "http://localhost:8080/api/v1/records?type=expense&category=Food&dateFrom=2026-04-01&dateTo=2026-04-30" \
+  -H "X-Dev-Auth-User-Id: local-dev-user" \
+  -H "X-Dev-User-Role: viewer"
+```
+
+#### `GET /api/v1/records/:id`
+
+Viewer and above.
+
+```bash
+curl http://localhost:8080/api/v1/records/11111111-1111-1111-1111-111111111111 \
+  -H "X-Dev-Auth-User-Id: local-dev-user" \
+  -H "X-Dev-User-Role: viewer"
+```
+
+#### `POST /api/v1/records`
+
+Analyst and admin.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/records \
+  -H "Content-Type: application/json" \
+  -H "X-Dev-Auth-User-Id: local-dev-user" \
+  -H "X-Dev-User-Role: analyst" \
+  -d '{
+    "amount": "2500.00",
+    "type": "income",
+    "category": "Salary",
+    "date": "2026-04-01",
+    "notes": "Monthly salary"
+  }'
+```
+
+#### `PATCH /api/v1/records/:id`
+
+Analyst and admin.
+
+```bash
+curl -X PATCH http://localhost:8080/api/v1/records/11111111-1111-1111-1111-111111111111 \
+  -H "Content-Type: application/json" \
+  -H "X-Dev-Auth-User-Id: local-dev-user" \
+  -H "X-Dev-User-Role: analyst" \
+  -d '{
+    "category": "Groceries",
+    "notes": "Updated note"
+  }'
+```
+
+#### `DELETE /api/v1/records/:id`
+
+Admin only.
+
+```bash
+curl -X DELETE http://localhost:8080/api/v1/records/11111111-1111-1111-1111-111111111111 \
+  -H "X-Dev-Auth-User-Id: local-dev-user" \
+  -H "X-Dev-User-Role: admin"
+```
+
+### Dashboard Endpoint
+
+#### `GET /api/v1/dashboard/summary`
+
+Viewer and above.
+
+```bash
+curl "http://localhost:8080/api/v1/dashboard/summary?dateFrom=2026-01-01&dateTo=2026-03-31&trendInterval=monthly&trendPeriods=3&recentLimit=5" \
+  -H "X-Dev-Auth-User-Id: local-dev-user" \
+  -H "X-Dev-User-Role: viewer"
+```
+
+### Role Summary
+
+- `viewer`: `GET /api/v1/records`, `GET /api/v1/records/:id`, `GET /api/v1/dashboard/summary`
+- `analyst`: viewer permissions plus `POST /api/v1/records`, `PATCH /api/v1/records/:id`
+- `admin`: analyst permissions plus `DELETE /api/v1/records/:id`, `GET /api/v1/users`, `GET /api/v1/users/:id`, `POST /api/v1/users`, `PATCH /api/v1/users/:id`
+
+## Stack
+
+- Backend: Go, Echo, pgx, PostgreSQL
+- Auth: Clerk-compatible auth middleware with local development auth shortcuts
+- Background infrastructure: Redis, Asynq, Resend, New Relic
+- Shared packages: Bun workspace packages for OpenAPI, Zod schemas, and emails
+
+## Repository Layout
+
+```text
+.
+├── app/backend              # Go API server
+├── packages/openapi         # Shared OpenAPI generation
+├── packages/zod             # Shared Zod schemas
+├── packages/emails          # Shared email templates
+├── package.json             # Root workspace scripts
+└── turbo.json               # Turbo pipeline config
+```
+
+## Quick Start
+
+### 1. Clone the repo
+
+```bash
+git clone <your-repo-url> go-finance
+cd go-finance
+```
+
+### 2. Install workspace tooling
+
+This repo uses Bun for workspace scripts.
+
+```bash
+bun install
+```
+
+### 3. Prepare backend environment
+
+The backend reads configuration from `BOILERPLATE_*` environment variables and also autoloads `app/backend/.env` if present.
+
+Create `app/backend/.env` with values like:
+
+```bash
 BOILERPLATE_PRIMARY_ENV=local
 
-# Server
 BOILERPLATE_SERVER_PORT=8080
 BOILERPLATE_SERVER_READ_TIMEOUT=30
 BOILERPLATE_SERVER_WRITE_TIMEOUT=30
 BOILERPLATE_SERVER_IDLE_TIMEOUT=60
 BOILERPLATE_SERVER_CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8080
 
-# Database
 BOILERPLATE_DATABASE_HOST=localhost
 BOILERPLATE_DATABASE_PORT=5432
 BOILERPLATE_DATABASE_USER=postgres
-BOILERPLATE_DATABASE_PASSWORD=secret
-BOILERPLATE_DATABASE_NAME=boilerplate
+BOILERPLATE_DATABASE_PASSWORD=postgres
+BOILERPLATE_DATABASE_NAME=go_finance
 BOILERPLATE_DATABASE_SSL_MODE=disable
 BOILERPLATE_DATABASE_MAX_OPEN_CONNS=25
 BOILERPLATE_DATABASE_MAX_IDLE_CONNS=5
 BOILERPLATE_DATABASE_CONN_MAX_LIFETIME=300
 BOILERPLATE_DATABASE_CONN_MAX_IDLE_TIME=60
 
-# Auth (Clerk)
-BOILERPLATE_AUTH_SECRET_KEY=sk_test_...
-
-# Redis
+BOILERPLATE_AUTH_SECRET_KEY=sk_test_placeholder
 BOILERPLATE_REDIS_ADDRESS=localhost:6379
-
-# Integration (Resend)
-BOILERPLATE_INTEGRATION_RESEND_API_KEY=re_...
-
-# Observability (optional)
-BOILERPLATE_OBSERVABILITY_SERVICE_NAME=boilerplate
-BOILERPLATE_OBSERVABILITY_ENVIRONMENT=development
-BOILERPLATE_OBSERVABILITY_LOGGING_LEVEL=debug
-BOILERPLATE_OBSERVABILITY_LOGGING_FORMAT=json
-BOILERPLATE_OBSERVABILITY_NEW_RELIC_LICENSE_KEY=
-BOILERPLATE_OBSERVABILITY_NEW_RELIC_APP_LOG_FORWARDING_ENABLED=true
-BOILERPLATE_OBSERVABILITY_NEW_RELIC_DISTRIBUTED_TRACING_ENABLED=true
-BOILERPLATE_OBSERVABILITY_NEW_RELIC_DEBUG_LOGGING=false
-BOILERPLATE_OBSERVABILITY_HEALTH_CHECKS_ENABLED=true
-BOILERPLATE_OBSERVABILITY_HEALTH_CHECKS_INTERVAL=30s
-BOILERPLATE_OBSERVABILITY_HEALTH_CHECKS_TIMEOUT=5s
-BOILERPLATE_OBSERVABILITY_HEALTH_CHECKS_CHECKS=database,redis
+BOILERPLATE_INTEGRATION_RESEND_API_KEY=re_placeholder
 ```
 
-For **Taskfile** migrations: set **BOILERPLATE_DB_DSN** (e.g. `postgres://user:pass@localhost:5432/boilerplate?sslmode=disable`).
+Notes:
 
----
+- In `local` mode, the auth middleware can use `X-Dev-Auth-User-Id` and `X-Dev-User-Role`.
+- Redis, Clerk, Resend, and New Relic may still be configured even if you are mainly working on the API layer.
 
-## Running the Project
+### 4. Start PostgreSQL and create the database
 
-1. **Prerequisites:** Go 1.25+, PostgreSQL, Redis, Node/Bun for packages.
-2. **Env:** Copy or set the variables above (e.g. `.env` and use `godotenv/autoload` or export).
-3. **Backend:**
-   - From repo root: `cd backend && task run` (or `go run ./cmd/go-boilerplate`).
-   - Migrations (non-local): run automatically on startup; for manual run: `BOILERPLATE_DB_DSN=... task migrations:up`.
-   - New migration: `task migrations:new name=add_users_table`.
-4. **OpenAPI:** From repo root, build/openapi gen so `backend/static/openapi.json` exists (e.g. `cd packages/zod && bun run build && cd ../openapi && bun run gen` if gen writes there). Then open `http://localhost:8080/docs`.
-5. **Health:** `GET http://localhost:8080/status`.
+You need a running PostgreSQL instance and a database matching `BOILERPLATE_DATABASE_NAME`.
 
----
+### 5. Apply migrations
 
-## Extending the Boilerplate
+From `app/backend`:
 
-- **New route:** Add to `router/system.go` or a versioned group in `router/router.go`; use `middlewares.Auth.RequireAuth(next)` for protected routes.
-- **New handler:** Implement handler func with request/response types implementing **Validatable** where needed; register with **Handle**, **HandleNoContent**, or **HandleFile** from `handler/base.go`.
-- **New migration:** `task migrations:new name=your_change` in `backend`, then edit the new file under `internal/database/migrations/`.
-- **New job:** Define task type and payload in `internal/lib/jobs`, add handler in `job.go` (mux.HandleFunc), enqueue via `Job.Client.Enqueue(...)` from services/handlers.
-- **New email template:** Add template name in `internal/lib/email/template.go`, HTML in `templates/emails/`, and send method in `internal/lib/email/`.
-- **OpenAPI:** Add contract in `packages/openapi/src/contracts/`, add Zod types in `packages/zod`, run openapi package gen and copy/openapi.json to `backend/static/` if needed.
-- **Config:** Add fields to `config.Config` or `ObservabilityConfig` and corresponding env vars with `BOILERPLATE_` prefix.
+```bash
+cd app/backend
+BOILERPLATE_DB_DSN="postgres://postgres:postgres@localhost:5432/go_finance?sslmode=disable" task migrations:up
+```
+
+### 6. Start the backend
+
+```bash
+cd app/backend
+task run
+```
+
+The server will start on `http://localhost:8080` if you kept the sample port.
+
+## Useful Commands
+
+From the repo root:
+
+```bash
+bun install
+bun run dev
+bun run build
+bun run lint
+bun run typecheck
+```
+
+From `app/backend`:
+
+```bash
+task run
+task tidy
+go test ./...
+task migrations:new name=add_some_table
+BOILERPLATE_DB_DSN="postgres://..." task migrations:up
+```
+
+To rebuild the shared Swagger/OpenAPI spec after backend contract changes:
+
+```bash
+cd packages/zod && bun run build
+cd ../openapi && bun run build && bun run gen
+```
+
+## Authentication and Local Development
+
+Protected routes use auth middleware plus an application-level user lookup.
+
+In local mode, you can call authenticated endpoints with headers like:
+
+```text
+X-Dev-Auth-User-Id: local-dev-user
+X-Dev-User-Role: admin
+```
+
+Important:
+
+- `RequireAuth` identifies the caller.
+- `RequireActiveUser` loads the provisioned app user from the `users` table.
+- For most protected endpoints, the app user must already exist in the database.
+- `POST /api/v1/users/bootstrap` is used to create the initial admin user.
+
+## Role Access Model
+
+The backend now uses explicit permission-based access control.
+
+### Viewer
+
+- Can read financial records
+- Can access dashboard summaries
+- Cannot create or update records
+- Cannot delete records
+- Cannot manage users
+
+### Analyst
+
+- Can read financial records
+- Can access dashboard summaries
+- Can create records
+- Can update records
+- Cannot delete records
+- Cannot manage users
+
+### Admin
+
+- Full user management
+- Full record management, including delete
+- Can access all read and dashboard capabilities
+
+## API Base URL
+
+When running locally:
+
+```text
+http://localhost:8080
+```
+
+Versioned API routes live under:
+
+```text
+/api/v1
+```
+
+## API Documentation UI
+
+- `GET /docs`: serves the API docs UI
+- `GET /static/openapi.json`: serves the OpenAPI JSON
+- `GET /status`: health check
+
+The OpenAPI document is generated from the shared contract layer:
+
+- `packages/zod`: reusable request and response schemas
+- `packages/openapi`: ts-rest contracts and OpenAPI generation
+
+Running `bun run gen` inside `packages/openapi` writes the spec to:
+
+- `packages/openapi/openapi.json`
+- `app/backend/static/openapi.json`
+
+## Endpoint Reference
+
+### System Endpoints
+
+#### `GET /status`
+
+Health check endpoint.
+
+Response:
+
+- `200 OK` when the app is healthy
+- `503 Service Unavailable` when a dependency check fails
+
+Example response:
+
+```json
+{
+  "status": "healthy",
+  "timestamp": "2026-04-02T12:00:00Z",
+  "environment": "local",
+  "checks": {
+    "database": {
+      "status": "healthy",
+      "response_time": "2ms"
+    },
+    "redis": {
+      "status": "healthy",
+      "response_time": "1ms"
+    }
+  }
+}
+```
+
+#### `GET /docs`
+
+Serves the API documentation HTML page.
+
+#### `GET /static/openapi.json`
+
+Serves the OpenAPI JSON document used by the docs UI.
+
+### User Endpoints
+
+#### `GET /api/v1/users/me`
+
+Returns the currently authenticated, provisioned app user.
+
+Auth:
+
+- Requires authentication
+- Requires active app user
+
+Response:
+
+- `200 OK`
+- `401 Unauthorized`
+- `403 Forbidden`
+
+#### `POST /api/v1/users/bootstrap`
+
+Creates the initial admin user for the application. This is intended for first-time setup.
+
+Auth:
+
+- Requires authentication
+- Does not require an already provisioned app user
+
+Request body:
+
+```json
+{
+  "email": "admin@example.com",
+  "name": "Admin User"
+}
+```
+
+Response:
+
+- `201 Created`
+- `400 Bad Request` for invalid input
+- `403 Forbidden` if an initial admin already exists
+
+#### `GET /api/v1/users`
+
+Lists all users.
+
+Auth:
+
+- Requires authentication
+- Requires active app user
+- Requires admin permission
+
+Response:
+
+- `200 OK`
+- `401 Unauthorized`
+- `403 Forbidden`
+
+#### `GET /api/v1/users/:id`
+
+Fetches a single user by UUID.
+
+Auth:
+
+- Admin only
+
+Response:
+
+- `200 OK`
+- `404 Not Found`
+
+#### `POST /api/v1/users`
+
+Creates a user.
+
+Auth:
+
+- Admin only
+
+Request body:
+
+```json
+{
+  "authUserId": "user_123",
+  "email": "viewer@example.com",
+  "name": "Viewer User",
+  "role": "viewer",
+  "status": "active"
+}
+```
+
+Response:
+
+- `201 Created`
+- `400 Bad Request`
+- `403 Forbidden`
+
+#### `PATCH /api/v1/users/:id`
+
+Updates an existing user.
+
+Auth:
+
+- Admin only
+
+Rules:
+
+- At least one field must be provided
+- `role` must be one of `viewer`, `analyst`, `admin`
+- `status` must be one of `active`, `inactive`
+
+Example body:
+
+```json
+{
+  "role": "analyst",
+  "status": "active"
+}
+```
+
+Response:
+
+- `200 OK`
+- `400 Bad Request`
+- `404 Not Found`
+
+### Financial Record Endpoints
+
+#### `GET /api/v1/records`
+
+Lists financial records.
+
+Auth:
+
+- Viewer and above
+
+Query params:
+
+- `type`: `income` or `expense`
+- `category`: exact category filter
+- `dateFrom`: `YYYY-MM-DD`
+- `dateTo`: `YYYY-MM-DD`
+
+Response:
+
+- `200 OK`
+- `400 Bad Request`
+
+#### `GET /api/v1/records/:id`
+
+Returns a single financial record by UUID.
+
+Auth:
+
+- Viewer and above
+
+Response:
+
+- `200 OK`
+- `404 Not Found`
+
+#### `POST /api/v1/records`
+
+Creates a financial record.
+
+Auth:
+
+- Analyst and admin
+
+Request body:
+
+```json
+{
+  "amount": "2500.00",
+  "type": "income",
+  "category": "Salary",
+  "date": "2026-04-01",
+  "notes": "April salary"
+}
+```
+
+Rules:
+
+- `amount` must be a valid non-negative decimal
+- `type` must be `income` or `expense`
+- `category` is required
+- `date` must be `YYYY-MM-DD`
+
+Response:
+
+- `201 Created`
+- `400 Bad Request`
+
+#### `PATCH /api/v1/records/:id`
+
+Updates a financial record.
+
+Auth:
+
+- Analyst and admin
+
+Rules:
+
+- At least one field must be provided
+- Field validations are the same as create
+
+Response:
+
+- `200 OK`
+- `400 Bad Request`
+- `404 Not Found`
+
+#### `DELETE /api/v1/records/:id`
+
+Deletes a financial record.
+
+Auth:
+
+- Admin only
+
+Response:
+
+- `204 No Content`
+- `404 Not Found`
+
+### Dashboard Summary Endpoint
+
+#### `GET /api/v1/dashboard/summary`
+
+Returns aggregated dashboard data for the authenticated user.
+
+Auth:
+
+- Viewer and above
+
+Query params:
+
+- `dateFrom`: optional `YYYY-MM-DD`
+- `dateTo`: optional `YYYY-MM-DD`
+- `trendInterval`: optional `weekly` or `monthly`
+- `trendPeriods`: optional integer `1-24`
+- `recentLimit`: optional integer `1-20`
+
+Response includes:
+
+- `totalIncome`
+- `totalExpenses`
+- `netBalance`
+- `categoryTotals`
+- `recentActivity`
+- `trends`
+
+Example response:
+
+```json
+{
+  "dateFrom": "2026-01-01T00:00:00Z",
+  "dateTo": "2026-03-31T00:00:00Z",
+  "trendInterval": "monthly",
+  "totalIncome": "6000.00",
+  "totalExpenses": "2400.00",
+  "netBalance": "3600.00",
+  "categoryTotals": [
+    {
+      "type": "expense",
+      "category": "Rent",
+      "total": "1500.00"
+    }
+  ],
+  "recentActivity": [],
+  "trends": [
+    {
+      "interval": "monthly",
+      "periodStart": "2026-01-01T00:00:00Z",
+      "periodEnd": "2026-01-31T00:00:00Z",
+      "income": "2000.00",
+      "expenses": "800.00",
+      "netBalance": "1200.00"
+    }
+  ]
+}
+```
+
+Response:
+
+- `200 OK`
+- `400 Bad Request`
+
+## Validation and Error Handling
+
+The backend demonstrates production-style request handling:
+
+- Struct validation for required and constrained fields
+- Strict JSON decoding for write endpoints
+- Rejection of malformed JSON
+- Rejection of unknown JSON fields
+- Rejection of invalid types
+- Field-level validation errors in a structured response
+- Appropriate HTTP status codes for validation, auth, forbidden, not found, and server failures
+
+Typical error response shape:
+
+```json
+{
+  "code": "BAD_REQUEST",
+  "message": "Validation failed",
+  "status": 400,
+  "override": true,
+  "errors": [
+    {
+      "field": "dateFrom",
+      "error": "must be before or equal to dateTo"
+    }
+  ],
+  "action": null
+}
+```
+
+Common statuses:
+
+- `400 Bad Request`: invalid or incomplete input
+- `401 Unauthorized`: missing or invalid auth
+- `403 Forbidden`: authenticated but not allowed
+- `404 Not Found`: resource or route not found
+- `429 Too Many Requests`: rate limited
+- `500 Internal Server Error`: unexpected failure
+- `503 Service Unavailable`: unhealthy service dependencies
+
+## Testing
+
+Run backend tests with:
+
+```bash
+cd app/backend
+go test ./...
+```
+
+Recent backend work includes tests for:
+
+- Service-level financial record logic
+- Auth and authorization behavior
+- Validation and malformed payload handling
+
+## Notes for Contributors
+
+- Keep handlers thin and push business logic into services
+- Keep repository code focused on data access
+- Preserve the explicit permission-based authorization model
+- Add tests alongside any new middleware, handler, or service behavior
+- Keep the OpenAPI output in sync with runtime endpoints
+
+## Additional Docs
+
+- Backend-specific contributor notes: [app/backend/README.md](/Users/ayushamin/Developer/repos/go-finance/app/backend/README.md)
+- Repo agent instructions: [AGENTS.md](/Users/ayushamin/Developer/repos/go-finance/AGENTS.md)
+- Backend agent instructions: [app/backend/AGENTS.md](/Users/ayushamin/Developer/repos/go-finance/app/backend/AGENTS.md)
