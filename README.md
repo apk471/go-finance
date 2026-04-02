@@ -4,6 +4,12 @@ Go Finance is a monorepo centered around a Go API for user management, financial
 
 This README is the primary onboarding and API reference for the project.
 
+## Additional Docs
+
+- Backend-specific contributor notes: [app/backend/README.md](/Users/ayushamin/Developer/repos/go-finance/app/backend/README.md)
+- Repo agent instructions: [AGENTS.md](/Users/ayushamin/Developer/repos/go-finance/AGENTS.md)
+- Backend agent instructions: [app/backend/AGENTS.md](/Users/ayushamin/Developer/repos/go-finance/app/backend/AGENTS.md)
+
 ## API Quick Reference
 
 Base URL:
@@ -794,9 +800,3 @@ Recent backend work includes tests for:
 - Preserve the explicit permission-based authorization model
 - Add tests alongside any new middleware, handler, or service behavior
 - Keep the OpenAPI output in sync with runtime endpoints
-
-## Additional Docs
-
-- Backend-specific contributor notes: [app/backend/README.md](/Users/ayushamin/Developer/repos/go-finance/app/backend/README.md)
-- Repo agent instructions: [AGENTS.md](/Users/ayushamin/Developer/repos/go-finance/AGENTS.md)
-- Backend agent instructions: [app/backend/AGENTS.md](/Users/ayushamin/Developer/repos/go-finance/app/backend/AGENTS.md)
