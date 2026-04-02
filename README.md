@@ -6,9 +6,9 @@ This README is the primary onboarding and API reference for the project.
 
 ## Additional Docs
 
-- Backend-specific contributor notes: [app/backend/README.md](/Users/ayushamin/Developer/repos/go-finance/app/backend/README.md)
-- Repo agent instructions: [AGENTS.md](/Users/ayushamin/Developer/repos/go-finance/AGENTS.md)
-- Backend agent instructions: [app/backend/AGENTS.md](/Users/ayushamin/Developer/repos/go-finance/app/backend/AGENTS.md)
+- Backend-specific contributor notes: [app/backend/README.md](app/backend/README.md)
+- Repo agent instructions: [AGENTS.md](AGENTS.md)
+- Backend agent instructions: [app/backend/AGENTS.md](app/backend/AGENTS.md)
 
 ## API Quick Reference
 
