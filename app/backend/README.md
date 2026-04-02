@@ -66,6 +66,20 @@ Current backend route groups:
 
 See the root README for request and response details.
 
+## OpenAPI Source Of Truth
+
+The backend docs UI serves `static/openapi.json`, but that file is generated from the shared packages:
+
+- `packages/zod`: request and response schemas
+- `packages/openapi`: route contracts and OpenAPI generation
+
+To refresh the backend spec after API changes:
+
+```bash
+cd packages/zod && bun run build
+cd ../openapi && bun run build && bun run gen
+```
+
 ## Authorization Model
 
 Permissions are enforced in middleware.
